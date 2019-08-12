@@ -1,0 +1,65 @@
+;;; -*- Mode: LISP; Package: :cl-user; BASE: 10; Syntax: ANSI-Common-Lisp; -*-
+;;;
+;;;   Time-stamp: <>
+;;;   Touched: Mon Aug 12 12:43:32 2019 +0530 <enometh@net.meer>
+;;;   Bugs-To: enometh@net.meer
+;;;   Status: Experimental.  Do not redistribute
+;;;   Copyright (C) 2019 Madhu.  All Rights Reserved.
+;;;
+;;; git https://github.com/fukamachi/fast-http.git
+;;;
+(in-package "CL-USER")
+
+(defvar *fast-http-source-dir*
+  (merge-pathnames "fast-http/" (translate-logical-pathname "EXTERN:")))
+(defvar *fast-http-binary-dir* (binary-directory *fast-http-source-dir*))
+
+(mk:defsystem :fast-http
+  :source-pathname *fast-http-source-dir*
+  :binary-pathname *fast-http-binary-dir*
+  :source-extension "lisp"
+  :depends-on (:alexandria
+               :cl-utilities
+               :proc-parse
+               :babel
+               :xsubseq
+               #+fast-http-debug
+               :log4cl
+
+               :smart-buffer)
+  :components ((:module "src"
+                :components
+                ((:file "fast-http" :depends-on ("http" "parser" "multipart-parser" "byte-vector" "error"))
+                 (:file "http")
+                 (:file "parser" :depends-on ("http" "error" "byte-vector" "util"))
+                 (:file "multipart-parser" :depends-on ("parser" "byte-vector" "error"))
+                 (:file "byte-vector")
+                 (:file "error")
+                 (:file "util" :depends-on ("error"))))))
+
+#+nil
+(mk:oos :fast-http :load :compile-during-load t)
+
+(mk:defsystem :fast-http-test
+  :source-pathname *fast-http-source-dir*
+  :binary-pathname *fast-http-binary-dir*
+  :source-extension "lisp"
+  :depends-on (:fast-http
+               :babel
+               :cl-syntax-interpol
+               :xsubseq
+               :prove)
+  :components ((:module "t"
+                :components
+                ((:file "parser" :depends-on ("test-utils"))
+                 (:file "fast-http" :depends-on ("test-utils"))
+                 (:file "multipart-parser" :depends-on ("test-utils"))
+                 (:file "util")
+                 (:file "test-utils")
+                 (:file "benchmark")))))
+
+#+nil
+(mk:oos :fast-http-test :load :compile-during-load t)
+
+#+nil
+(prove.asdf:run-test-system :fast-http-test)
