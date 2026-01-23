@@ -630,12 +630,14 @@ headers) keep the line's leading whitespace, as before."
              ;; we need some way to enable (or disable)
              ;; HTTP pipelining support.
              start)
-           ;; read until EOF
-           (progn
-             (callback-data :body http callbacks data start end)
-             (setf (http-mark http) end)
-	     (message-complete)
-             end)))
+	   (if (equal start end)
+	       end
+	       ;; read until EOF
+	       (progn
+		 (callback-data :body http callbacks data start end)
+		 (setf (http-mark http) end)
+		 (message-complete)
+		 end))))
       (otherwise
        ;; Content-Length header given and non-zero
        (multiple-value-bind (next completedp)
