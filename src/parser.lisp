@@ -23,6 +23,7 @@
   (:export :callbacks
 
            :make-callbacks
+           :*loose-crlf*
 
            :parse-request
            :parse-response
@@ -248,6 +249,12 @@ operations per extension line rather than unbounded.")
         (values major minor (pos))))
     (error 'eof)))
 
+(defvar *loose-crlf* t
+  "be lax with server header parsing: allow lf instead of crlf")
+
+(defvar loose-crlf-p nil
+  "internal")
+
 (defun-insane parse-status-code (http callbacks data start end)
   (declare (type simple-byte-vector data)
            (type pointer start end))
@@ -268,15 +275,25 @@ operations per extension line rather than unbounded.")
              ;; Reading the status text
              (advance)
              (let ((status-text-start (pos)))
-               (skip* (not #\Return))
-               (advance)
-               (skip #\Newline)
-               (callback-data :status http callbacks data status-text-start (- (pos) 1)))
+               (skip-until (lambda (c) (member c (list* +cr+ (if *loose-crlf* (list +lf+))))))
+	     (assert (pos))
+	       (when (or (setq loose-crlf-p nil)
+		      (= (current) +cr+)
+		      (and *loose-crlf*
+			   (setq loose-crlf-p (= (current) +lf+))))
+		 (unless loose-crlf-p
+		   (advance))
+		 (skip #\Newline));OLDPOS?
+               (callback-data :status http callbacks data status-text-start (- (pos) (if loose-crlf-p 0 1))))
              (return))
-            ((= (current) +cr+)
-             ;; No status text
-             (advance)
-             (skip #\Newline)
+            ((or (setq loose-crlf-p nil)
+		 (= (current) +cr+)
+		 (and *loose-crlf*
+		      (setq loose-crlf-p (= (current) +lf+))))
+	     ;; No status text
+	     (unless loose-crlf-p
+	       (advance))
+	     (skip #\Newline)
              (return))
             (T (error 'invalid-status))))
         (pos))
@@ -295,21 +312,29 @@ operations per extension line rather than unbounded.")
                        (skip #\:)
                        (skip* #\Space #\Tab)
                        (cond
-                         ((= (current) +cr+)
+                         ((or (setq loose-crlf-p nil)
+			      (= (current) +cr+)
+			      (and *loose-crlf*
+				  (setq loose-crlf-p (= (current) +lf+))))
                           ;; continue to the next line
-                          (advance)
-                          (skip #\Newline)
+			  (unless loose-crlf-p
+			    (advance))
+			  (skip #\Newline)
                           (cond
                             ((or (= (current) +space+)
                                  (= (current) +tab+))
                              (when (typep http 'http-request)
                                (error 'obsolete-line-folding))
                              (skip* #\Space #\Tab)
-                             (if (= (current) +cr+)
+                             (if (or (setq loose-crlf-p nil)
+				     (= (current) +cr+)
+				     (and *loose-crlf*
+					  (setq loose-crlf-p (= (current) +lf+))))
                                  ;; empty body
                                  (progn
-                                   (advance)
-                                   (skip #\Newline)
+				   (unless loose-crlf-p
+				     (advance))
+				   (skip #\Newline)
                                    (callback-data :header-field http callbacks data field-start field-end)
                                    (callback-data :header-value http callbacks data (pos) (pos)))
                                  (progn ,@body)))
@@ -385,23 +410,33 @@ operations per extension line rather than unbounded.")
             (skip-until-value-start-and
              (setf (http-upgrade-p http) T)
              (let ((value-start (pos)))
-               (skip* (not #\Return))
-               (advance)
-               (skip #\Newline)
+	       (skip-until (lambda (c) (member c (list* +cr+ (if *loose-crlf* (list +lf+))))))
+	       (when (or (setq loose-crlf-p nil)
+			 (= (current) +cr+)
+			 (and *loose-crlf*
+			      (setq loose-crlf-p (= (current) +lf+))))
+		 (unless loose-crlf-p
+		   (advance))
+		 (skip #\Newline))
                (callback-data :header-field http callbacks data field-start field-end)
-               (callback-data :header-value http callbacks data value-start (- (pos) 2))))))
+               (callback-data :header-value http callbacks data value-start (- (pos) 1 (if loose-crlf-p 0 1)))))))
           (otherwise (handle-otherwise)))))
      (pos))
    (error 'eof)))
 
 (defun-speedy parse-header-value (http callbacks data start end &optional field-start field-end)
   (or (with-octets-parsing (data :start start :end end)
-        (skip* (not #\Return))
-        (advance)
-        (skip #\Newline)
+	(skip-until (lambda (c) (member c (list* +cr+ (if *loose-crlf* (list +lf+))))))
+	(when (or (setq loose-crlf-p nil)
+		  (= (current) +cr+)
+		  (and *loose-crlf*
+		       (setq loose-crlf-p (= (current) +lf+))))
+	  (unless loose-crlf-p
+	    (advance))
+	  (skip #\Newline))
         (when field-start
           (callback-data :header-field http callbacks data field-start field-end))
-        (callback-data :header-value http callbacks data start (- (pos) 2))
+        (callback-data :header-value http callbacks data start (- (pos) 1 (if loose-crlf-p 0 1)))
         (pos))
       (error 'eof)))
 
@@ -414,31 +449,52 @@ operations per extension line rather than unbounded.")
         ;; Skip OWS between tokens
         (skip* #\Space #\Tab)
         ;; End of value
-        (when (= (current) +cr+)
-          (advance)
-          (skip #\Newline)
+        (when (or (setq loose-crlf-p nil)
+		  (= (current) +cr+)
+		  (and *loose-crlf*
+		       (setq loose-crlf-p (= (current) +lf+))))
+	  (progn
+	    (unless loose-crlf-p
+	      (advance))
+	    (skip #\Newline))
           (return-from parse-header-value-transfer-encoding
             (values start (- (pos) 2) (pos) chunkedp)))
         ;; Try to match "chunked" token
         (match-i-case
          ("chunked"
+	  ;; ;madhu 260415 CHECKME
           ;; Valid token boundary: OWS, comma, or CR follows
-          (when (or (= (current) +cr+)
+          (when (or (or (setq loose-crlf-p nil)
+			(= (current) +cr+)
+			(and *loose-crlf*
+			     (setq loose-crlf-p (= (current) +lf+))))
                     (= (current) +space+)
                     (= (current) +tab+)
                     (= (current) #.(char-code #\,)))
             (setf chunkedp t))
           ;; Skip any remaining bytes in this token
-          (loop until (or (= (current) +cr+)
+          (loop until (or (or (setq loose-crlf-p nil)
+			      (= (current) +cr+)
+			      (and *loose-crlf*
+				   (setq loose-crlf-p (= (current) +lf+))))
                           (= (current) #.(char-code #\,)))
-                do (advance)))
+                do (unless loose-crlf-p
+		     (advance))))
          (otherwise
-          (loop until (or (= (current) +cr+)
+          (loop until (or (or (setq loose-crlf-p nil)
+			      (= (current) +cr+)
+			      (and *loose-crlf*
+				   (setq loose-crlf-p (= (current) +lf+))))
                           (= (current) #.(char-code #\,)))
-                do (advance))))
+                do (unless loose-crlf-p
+		     (advance)))))
         ;; Now at comma or CR
-        (when (= (current) +cr+)
-          (advance)
+        (when (or (setq loose-crlf-p nil)
+		  (= (current) +cr+)
+		  (and *loose-crlf*
+		       (setq loose-crlf-p (= (current) +lf+))))
+          (unless loose-crlf-p
+	    (advance))
           (skip #\Newline)
           (return-from parse-header-value-transfer-encoding
             (values start (- (pos) 2) (pos) chunkedp)))
@@ -475,11 +531,15 @@ operations per extension line rather than unbounded.")
                     (digit-byte-char-to-integer (current))))
            (when (> content-length #xFFFFFFFFFFFFFFFF)
              (error 'invalid-content-length)))
-          ((= (current) +cr+)
-           (advance)
-           (skip #\Newline)
+          ((or (setq loose-crlf-p nil)
+	       (= (current) +cr+)
+	       (and *loose-crlf*
+		    (setq loose-crlf-p (= (current) +lf+))))
+	   (unless loose-crlf-p
+	     (advance))
+	   (skip #\Newline)
            (return-from parse-header-value-content-length
-             (values start (- (pos) 2) (pos) content-length)))
+             (values start (- (pos) 1 (if loose-crlf-p 0 1)) (pos) content-length)))
           ((= (current) +space+)
            ;; Allow trailing spaces, but flag for embedded-space detection
            (setq seen-space t))
@@ -523,10 +583,18 @@ headers) keep the line's leading whitespace, as before."
       ((or (= current +tab+)
            (= current +space+))
        (parse-folded-line http callbacks data start end))
-      ((/= current +cr+)
+      ((or (setq loose-crlf-p nil)
+	   (and (/= current +cr+)
+		(or (not *loose-crlf*)
+		    (and *loose-crlf*
+			 (setq loose-crlf-p (/= current +lf+))))))
        (parse-header-field-and-value http callbacks data start end))
       (t
-       (incf start)
+       (cond (*loose-crlf*
+	      (cond ((= (aref data start) +lf+) nil)
+		    ((= (aref data start) +cr+) (incf start))))
+	     (t (assert  (= (aref data start) +cr+))
+		(incf start)))
        (when (= start end)
          (error 'eof))
        (setq current (aref data start))
@@ -540,10 +608,14 @@ headers) keep the line's leading whitespace, as before."
            (type pointer start end))
   (or (with-octets-parsing (data :start start :end end)
         ;; empty headers
-        (when (= (current) +cr+)
-          (advance)
+        (when (or (setq loose-crlf-p nil)
+		  (= (current) +cr+)
+		  (and *loose-crlf*
+		       (setq loose-crlf-p (= (current) +lf+))))
+          (unless loose-crlf-p
+	    (advance))
           (if (= (current) +lf+)
-              (return-from parse-headers (1+ (pos)))
+              (return-from parse-headers (+ (pos) 1))
               (error 'expect-failed)))
 
         (advance-to* (if (plusp (http-header-read http))
@@ -682,9 +754,13 @@ headers) keep the line's leading whitespace, as before."
                (declare (type fixnum digit-count))
                (loop
                  (advance)
-                 (if (= (current) +cr+)
+                 (if (or (setq loose-crlf-p nil)
+		       (= (current) +cr+)
+		       (and *loose-crlf*
+			    (setq loose-crlf-p (= (current) +lf+))))
                      (progn
-                       (advance)
+                       (unless loose-crlf-p
+			 (advance))
                        (tagbody
                           (skip #\Newline)
                         :eof
@@ -704,9 +780,16 @@ headers) keep the line's leading whitespace, as before."
                              ;; :eof tag. Do not add a nested (tagbody ... :eof ...) inside
                              ;; this loop — it would shadow the outer tag and silently break
                              ;; EOF handling.
-                             (or (advance*) (go :eof))
+			     (skip-until (lambda (c) (member c (list* +cr+ (if *loose-crlf* (list +lf+))))))
+			     (when (or (setq loose-crlf-p nil)
+				       (= (current) +cr+)
+				       (and *loose-crlf*
+					    (setq loose-crlf-p (= (current) +lf+))))
+			       (unless loose-crlf-p
+				 (or (advance*) (go :eof))))
                              (let ((ext-count 0))
                                (declare (type fixnum ext-count))
+					;; ;madhu 260415 - CHECKME
                                (loop
                                  (when (= (current) +cr+) (return))
                                  (when (> (incf ext-count) +max-chunk-extension-bytes+)
@@ -744,6 +827,7 @@ headers) keep the line's leading whitespace, as before."
                 (advance-to next))))
 
          body-end-crlf
+	   ;; FIXME
            (skip #\Return)
            (tagbody
               (skip #\Newline)
@@ -788,8 +872,12 @@ headers) keep the line's leading whitespace, as before."
 
          first-line
            ;; skip first empty line (some clients add CRLF after POST content)
-           (when (= (current) +cr+)
-             (advance)
+           (when (setq loose-crlf-p nil)
+	     (or (= (current) +cr+)
+		     (and *loose-crlf*
+			  (setq loose-crlf-p (= (current) +lf+))))
+	     (unless loose-crlf-p
+	       (advance))
              (tagbody
                 (skip #\Newline)
               :eof
@@ -819,10 +907,14 @@ headers) keep the line's leading whitespace, as before."
 
                 (cond
                   ;; No HTTP version
-                  ((= (current) +cr+)
+                  ((or (setq loose-crlf-p nil)
+		       (= (current) +cr+)
+		       (and *loose-crlf*
+			    (setq loose-crlf-p (= (current) +lf+))))
                    (callback-data :url http callbacks data url-start-mark url-end-mark)
-                   (advance)
-                   (skip #\Newline))
+		   (unless loose-crlf-p
+		     (advance))
+		   (skip #\Newline))
                   (t (multiple-value-bind (major minor next)
                          (parse-http-version data (pos) end)
                        (declare (type pointer next))
@@ -838,7 +930,8 @@ headers) keep the line's leading whitespace, as before."
                        (setf (http-major-version http) major
                              (http-minor-version http) minor)
                        (advance-to* next))
-                     (skip #\Return)
+		     (unless loose-crlf-p
+		       (skip #\Return))
                      (skip #\Newline)))))
 
            (setf (http-mark http) (pos))
@@ -924,8 +1017,12 @@ headers) keep the line's leading whitespace, as before."
              ((= (current) +space+)
               (advance)
               (advance-to (parse-status-code http callbacks data (pos) end)))
-             ((= (current) +cr+)
-              (skip #\Newline))
+             ((or (setq loose-crlf-p nil)
+		  (= (current) +cr+)
+		  (and *loose-crlf*
+		       (setq loose-crlf-p (= (current) +lf+))))
+	      (unless loose-crlf-p
+		(skip #\Newline)))
              (T (error 'invalid-version)))
 
            (setf (http-mark http) (pos))
