@@ -14,7 +14,8 @@
                 :digit-byte-char-to-integer)
   (:import-from :fast-http.util
                 :defun-insane
-                :defun-speedy)
+                :defun-speedy
+   :defun-careful)
   (:import-from :alexandria
                 :format-symbol
                 :with-gensyms
@@ -255,7 +256,8 @@ operations per extension line rather than unbounded.")
 (defvar loose-crlf-p nil
   "internal")
 
-(defun-insane parse-status-code (http callbacks data start end)
+;; insane
+(defun-careful parse-status-code (http callbacks data start end)
   (declare (type simple-byte-vector data)
            (type pointer start end))
   (or (with-octets-parsing (data :start start :end end)
@@ -299,7 +301,8 @@ operations per extension line rather than unbounded.")
         (pos))
       (error 'eof)))
 
-(defun-speedy parse-header-field-and-value (http callbacks data start end)
+;; speedy
+(defun-careful parse-header-field-and-value (http callbacks data start end)
   (declare (type simple-byte-vector data)
            (type pointer start end))
   (or
@@ -351,6 +354,7 @@ operations per extension line rather than unbounded.")
                            ((= (current) (char-code #\:)))
                          (declare (type character char))
                          (when (char= char #\Nul)
+			   (error "invalid header token current=~D ~A" (current) (pos))
                            (error 'invalid-header-token))
                          (advance))
 
@@ -424,7 +428,8 @@ operations per extension line rather than unbounded.")
      (pos))
    (error 'eof)))
 
-(defun-speedy parse-header-value (http callbacks data start end &optional field-start field-end)
+;; speedy
+(defun-careful parse-header-value (http callbacks data start end &optional field-start field-end)
   (or (with-octets-parsing (data :start start :end end)
 	(skip-until (lambda (c) (member c (list* +cr+ (if *loose-crlf* (list +lf+))))))
 	(when (or (setq loose-crlf-p nil)
@@ -502,7 +507,8 @@ operations per extension line rather than unbounded.")
         (advance))))
   (error 'eof))
 
-(defun-speedy parse-header-value-content-length (data start end)
+;; speedy
+(defun-careful parse-header-value-content-length (data start end)
   (declare (type simple-byte-vector data)
            (type pointer start end))
   (let ((content-length 0)
@@ -573,6 +579,9 @@ headers) keep the line's leading whitespace, as before."
      (parse-header-value http callbacks data start end))))
 
 (defun-speedy parse-header-line (http callbacks data start end)
+
+;; speedy
+(defun-careful parse-header-line (http callbacks data start end)
   (declare (type simple-byte-vector data)
            (type pointer start end))
   (when (<= end start)
@@ -599,10 +608,12 @@ headers) keep the line's leading whitespace, as before."
          (error 'eof))
        (setq current (aref data start))
        (unless (= current +lf+)
+	 (error "expect failed current=~A ~D" current start)
          (error 'expect-failed))
        (values (1+ start) t)))))
 
-(defun-speedy parse-headers (http callbacks data start end)
+;; speedy
+(defun-careful parse-headers (http callbacks data start end)
   (declare (type http http)
            (type simple-byte-vector data)
            (type pointer start end))
@@ -684,6 +695,9 @@ headers) keep the line's leading whitespace, as before."
   (macrolet ((message-complete ()
                `(progn
                   (callback-notify :message-complete http callbacks)
+		  #+nil
+		  (with-simple-restart (ok "cont")
+		    (error "setting state-first-line"))
                   (setf (http-state http) +state-first-line+))))
     (case (http-content-length http)
       (0
@@ -702,7 +716,7 @@ headers) keep the line's leading whitespace, as before."
              ;; we need some way to enable (or disable)
              ;; HTTP pipelining support.
              start)
-	   (if (equal start end)
+	   (if (= start end)
 	       end
 	       ;; read until EOF
 	       (progn

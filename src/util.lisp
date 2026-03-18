@@ -22,9 +22,9 @@
 (in-package :fast-http.util)
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (defvar *insane-declaration* '(declare (optimize (speed 3) (safety 0) (space 0) (compilation-speed 0))))
-  (defvar *speedy-declaration* '(declare (optimize (speed 3) (safety 0) (space 0) (compilation-speed 0))))
-  (defvar *careful-declaration* '(declare (optimize (speed 3) (safety 2)))))
+(defvar *insane-declaration* '(declare (optimize (speed 0) (safety 2) (debug 3) (space 0) (compilation-speed 0))))
+(defvar *speedy-declaration* '(declare (optimize (speed 0) (safety 2) (debug 3) (space 0) (compilation-speed 0))))
+(defvar *careful-declaration* '(declare (optimize (speed 0) (debug 3) (safety 2)))))
 
 (defmacro defun-insane (name lambda-list &body body)
   `(progn
